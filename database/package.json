@@ -1,0 +1,15 @@
+{
+  "name": "campus-canteen-database",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MongoDB data layer and daily sales analytics for Campus Canteen",
+  "main": "db.js",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test verify-stats.test.js stats-route.test.js",
+    "smoke": "node test-db.js"
+  },
+  "dependencies": {
+    "mongodb": "^7.7.0"
+  }
+}
