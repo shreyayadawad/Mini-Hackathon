@@ -1,114 +1,93 @@
+# Campus Canteen — MongoDB database and sales dashboard
 
-# Campus Canteen — Database Module
+This folder is maintained by Person 4. It provides MongoDB initialization, a reusable Node.js database client, today's sales aggregation, automated tests, and a small Express integration adapter.
 
-## Overview
+## Local setup
 
-This module manages the MongoDB database for
-the Campus Canteen Orders application.
+Install MongoDB 8 (running on `127.0.0.1:27017`) and Node.js 22+.
 
-Database name: campus_canteen
+From the **project root**:
 
-## Collections
+```bash
+npm --prefix database ci
+mongosh "mongodb://127.0.0.1:27017" --file database/setup.mongodb.js
+npm --prefix database test
+npm --prefix database run smoke
+```
 
-### 1. menu
+The setup script is rerunnable and seeds six example dishes. It never wipes existing menu items or orders. Keep the database bound to localhost in development; this local setup does not enable MongoDB authentication.
 
-Stores food items available in the canteen.
+Configuration:
 
-Fields:
-- _id: ObjectId
-- name: String
-- price: Number (INR)
-- category: String
-- emoji: String
-- image: String
-- available: Boolean
+- `MONGO_URI` defaults to `mongodb://127.0.0.1:27017`.
+- `MONGO_DB_NAME` defaults to `campus_canteen`.
 
-### 2. orders
+## Collections and schema
 
-Stores customer orders and their statuses.
+**menu**: `_id` (ObjectId), `name` (unique string), `price` (number in INR), `category` (string), `emoji` (string), `image` (string URL), `available` (boolean).
 
-Fields:
-- _id: ObjectId
-- customer: String
-- items: Array
-- total: Number
-- status: String
-- createdAt: Date
+**orders**: `_id` (ObjectId), `customer` (string), `items` (array of item snapshots), `total` (server-calculated number), `status` (string), `createdAt` (BSON Date). Each item should include `menuId` (ObjectId or agreed string), `name`, `emoji`, `price`, and `qty` (positive integer).
 
-Each order item contains:
-- name: String
-- price: Number
-- qty: Number
+The order API must calculate prices from current menu records, not from the client's request. Store item snapshots so later menu edits do not change past orders. Do not insert development test orders into production.
 
-Prices are saved at purchase time to preserve
-the order's original value.
+Indexes: unique `menu.name`; `orders.createdAt`; compound `orders.status, orders.createdAt`.
 
-## Installation
+## Daily sales: frontend and backend contract
 
-Start MongoDB locally.
+Call `getTodayStats()` from `database/db.js` to calculate today's numbers using `Asia/Kolkata` (IST). The frontend at `feature/js-client/public/app.js` expects:
 
-Install the database dependencies from
-the project root:
+```json
+{
+  "date": "2026-10-27",
+  "orders": 2,
+  "sales": 210,
+  "topItems": [{"name":"Veg Burger","emoji":"🍔","qty":2}],
+  "byStatus": {"placed":1,"preparing":0,"ready":0,"collected":1},
+  "totalOrders": 2,
+  "completedOrders": 1,
+  "revenue": 120
+}
+```
 
-    npm --prefix database ci
+**Semantics:**
 
-Initialize the database:
+- `orders` and `sales`: number and sum of order totals, excluding orders marked `cancelled`.
+- `topItems`: top five dishes by quantity among non-cancelled orders.
+- `byStatus`: counts for `placed`, `preparing`, `ready`, `collected`.
+- `totalOrders`: all orders placed today including any cancelled ones.
+- `completedOrders`/`revenue`: orders marked `collected` or the legacy `completed` status, and their totals.
 
-    mongosh --file database/setup.mongodb.js
+`sales` and `revenue` are operational totals, **not verified payments**. If a payment mechanism is introduced, paid revenue must be calculated using payment records instead of status.
 
-## Testing
+Dates and boundaries are computed in IST and matched against MongoDB Date values using an indexed range.
 
-Run the database connection test:
+## Person 3: attach route to Express
 
-    npm --prefix database test
+After creating `app = express()`, and after the database dependency is installed:
 
-To insert temporary sample orders:
+```js
+const { registerStatsRoute } = require("./database/stats-route");
+registerStatsRoute(app);
+```
 
-    mongosh --file database/test-orders.mongodb.js
+The helper registers `GET /api/stats/today`, sends the JSON contract above, and returns 500 without exposing internal errors if the database is unavailable. This file does not modify Person 3's `server.js`.
 
-To inspect today's statistics:
+The Node MongoDB driver lives under `database/node_modules`; run `npm --prefix database ci` before launching the backend.
 
-    mongosh --file database/stats.mongodb.js
+Other frontend API requirements owned by Person 3: `GET/POST /api/menu`, `PUT/DELETE /api/menu/:id`, `GET/POST /api/orders`, and `PATCH /api/orders/:id/status`. The backend should validate MongoDB ObjectIds, customer strings, and positive quantities, and use the status flow `placed → preparing → ready → collected`.
 
-Test orders are development data and should
-not be seeded into production.
+## Tests
 
-## Database Indexes
+`npm --prefix database test` runs real MongoDB aggregation assertions against a uniquely named temporary collection, plus route-adapter contract tests. The temporary test collection is dropped afterward. `npm --prefix database run smoke` checks the current live database without asserting fixed counts.
 
-- menu.name: unique index
-- orders.createdAt: ascending index
-- orders.status + createdAt: compound index
+The repository also contains `stats.mongodb.js` and `test-orders.mongodb.js`, designed to run via `mongosh`. The latter intentionally inserts *development* orders only and should not run against production.
 
-## Exports
+## Integration and GitHub
 
-database/db.js provides:
+Work stays on `feature/database` and is reviewed through PR #1 targeting `main`. Re-run `npm --prefix database test` after integrating Person 3's API. From the completed Express server, verify:
 
-- getDB()
-- getTodayStats()
-- closeDB()
+```bash
+curl -i http://localhost:3000/api/stats/today
+```
 
-## Daily Sales Logic
-
-Today's orders are calculated using
-the Asia/Kolkata timezone.
-
-The response contains:
-- totalOrders
-- completedOrders
-- revenue
-
-Currently, orders with status "completed"
-contribute to revenue.
-
-The exact order status values and payment
-semantics must be agreed with the backend developer.
-
-## Integration
-
-Person 3 can import this module using:
-
-    const { getTodayStats } =
-      require("./database/db");
-
-The Express route /api/stats/today will call
-getTodayStats() and return the resulting JSON.
+A 200 response must contain `date`, `orders`, `sales`, `topItems`, and `byStatus`. Do not merge unfinished frontend/backend branches solely to make this route work.
