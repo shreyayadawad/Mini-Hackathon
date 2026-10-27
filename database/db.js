@@ -23,16 +23,17 @@ async function getDB() {
   return connectionPromise;
 }
 
-// Calculate today's sales using Indian Standard Time.
-async function getTodayStats() {
-  const db = await getDB();
+async function getTodayStats(options = {}) {
+  const database = options.database || await getDB();
+  const collectionName = options.collectionName || "orders";
+  const now = options.now || new Date();
 
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Kolkata",
     year: "numeric",
     month: "2-digit",
     day: "2-digit"
-  }).formatToParts(new Date());
+  }).formatToParts(now);
 
   const values = Object.fromEntries(
     parts.map(p => [p.type, p.value])
@@ -50,7 +51,7 @@ async function getTodayStats() {
     start.getTime() + 24 * 60 * 60 * 1000
   );
 
-  const results = await db.collection("orders")
+  const results = await database.collection(collectionName)
     .aggregate([
       {
         $match: {
