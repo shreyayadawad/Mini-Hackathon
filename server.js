@@ -1,113 +1,27 @@
 const express = require("express");
-const { MongoClient } = require("mongodb");
 const path = require("path");
-
-// Import API routes
+const { MongoClient } = require("mongodb");
 const menuRoutes = require("./routes/menu");
 const orderRoutes = require("./routes/orders");
 const statsRoutes = require("./routes/stats");
-
-// Create Express application
 const app = express();
-
-// Configuration
-const PORT = process.env.PORT || 3000;
-const MONGO_URL =
-  process.env.MONGO_URL || "mongodb://127.0.0.1:27017";
-const DB_NAME = process.env.DB_NAME || "campus_canteen";
-
-// Middleware
-app.use(express.json());
-
-// Serve frontend files
+app.use(express.json({ limit: "100kb" }));
 app.use(express.static(path.join(__dirname, "public")));
-
-// MongoDB client
-const client = new MongoClient(MONGO_URL);
-
-// Start application
-async function startServer() {
-  try {
-    // Connect to MongoDB
-    await client.connect();
-
-    console.log("MongoDB connected successfully!");
-
-    // Select database
-    const db = client.db(DB_NAME);
-
-    // Select collections
-    const menuCollection = db.collection("menu");
-    const ordersCollection = db.collection("orders");
-
-    console.log(`Connected to database: ${DB_NAME}`);
-
-    // Health check API
-    app.get("/api/health", (req, res) => {
-      res.status(200).json({
-        success: true,
-        message: "Campus Canteen API is running",
-        database: DB_NAME
-      });
-    });
-
-    // Menu API
-    app.use("/api/menu", menuRoutes(menuCollection));
-
-    // Orders API
-    app.use(
-      "/api/orders",
-      orderRoutes(menuCollection, ordersCollection)
-    );
-
-    // Statistics API
-    app.use(
-      "/api/stats",
-      statsRoutes(ordersCollection)
-    );
-
-    // Handle unknown API endpoints
-    app.use("/api", (req, res) => {
-      res.status(404).json({
-        success: false,
-        error: "API endpoint not found"
-      });
-    });
-
-    // Global error handler
-    app.use((err, req, res, next) => {
-      console.error("Server error:", err);
-
-      res.status(500).json({
-        success: false,
-        error: "Internal server error"
-      });
-    });
-
-    // Start HTTP server
-    app.listen(PORT, () => {
-      console.log("----------------------------------");
-      console.log("Campus Canteen Server Started");
-      console.log(`Server running at http://localhost:${PORT}`);
-      console.log("----------------------------------");
-      console.log("Available API endpoints:");
-      console.log("GET    /api/health");
-      console.log("GET    /api/menu");
-      console.log("POST   /api/menu");
-      console.log("PUT    /api/menu/:id");
-      console.log("DELETE /api/menu/:id");
-      console.log("GET    /api/orders");
-      console.log("POST   /api/orders");
-      console.log("PATCH  /api/orders/:id/status");
-      console.log("GET    /api/stats/today");
-      console.log("----------------------------------");
-    });
-
-  } catch (error) {
-    console.error("Failed to start server:", error);
-    process.exit(1);
-  }
+const client = new MongoClient(process.env.MONGO_URL || "mongodb://127.0.0.1:27017");
+async function start() {
+  await client.connect();
+  const db = client.db(process.env.DB_NAME || "campus_canteen");
+  const menu = db.collection("menu");
+  const orders = db.collection("orders");
+  await menu.createIndex({name:1}, {unique:true, collation:{locale:"en",strength:2}});
+  await orders.createIndex({createdAt:-1});
+  app.get("/api/health", (req,res)=>res.json({ok:true, database:db.databaseName}));
+  app.use("/api/menu", menuRoutes(menu));
+  app.use("/api/orders", orderRoutes(menu,orders));
+  app.use("/api/stats", statsRoutes(orders));
+  app.use("/api", (req,res)=>res.status(404).json({error:"API endpoint not found"}));
+  app.use((err,req,res,next)=>{ console.error(err); res.status(500).json({error:"Internal server error"}); });
+  const port = Number(process.env.PORT) || 3000;
+  app.listen(port,()=>console.log("MongoDB connected successfully!\nServer running at http://localhost:"+port));
 }
-
-// Run application
-startServer();
+start().catch(err=>{console.error("Startup failed:",err);process.exitCode=1;client.close().catch(()=>{});});

@@ -1,76 +1,21 @@
-const express = require("express");
-
-module.exports = function (ordersCollection) {
-  const router = express.Router();
-
-  router.get("/today", async (req, res) => {
-    try {
-      const orders = await ordersCollection.find({}).toArray();
-
-      const today = new Date().toLocaleDateString("en-CA", {
-        timeZone: "Asia/Kolkata"
-      });
-
-      const todaysOrders = orders.filter((order) => {
-        if (!order.createdAt) return false;
-
-        return (
-          new Date(order.createdAt).toLocaleDateString("en-CA", {
-            timeZone: "Asia/Kolkata"
-          }) === today
-        );
-      });
-
-      const sales = todaysOrders.reduce(
-        (sum, order) => sum + (order.total || 0),
-        0
-      );
-
-      const byStatus = {
-        placed: 0,
-        preparing: 0,
-        ready: 0,
-        collected: 0
-      };
-
-      const itemCounts = {};
-
-      for (const order of todaysOrders) {
-        if (Object.hasOwn(byStatus, order.status)) {
-          byStatus[order.status]++;
-        }
-
-        for (const item of order.items || []) {
-          const key = item.name;
-
-          if (!itemCounts[key]) {
-            itemCounts[key] = {
-              name: item.name,
-              emoji: item.emoji || "",
-              qty: 0
-            };
-          }
-
-          itemCounts[key].qty += item.qty;
-        }
-      }
-
-      const topItems = Object.values(itemCounts)
-        .sort((a, b) => b.qty - a.qty)
-        .slice(0, 5);
-
-      res.status(200).json({
-        date: today,
-        sales,
-        orders: todaysOrders.length,
-        byStatus,
-        topItems
-      });
-    } catch (error) {
-      console.error("Stats error:", error);
-      res.status(500).json({ error: "Failed to calculate statistics" });
-    }
-  });
-
-  return router;
+const express=require("express");
+module.exports=orders=>{
+ const r=express.Router();
+ r.get("/today",async(req,res)=>{
+  const fmt=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Kolkata",year:"numeric",month:"2-digit",day:"2-digit"});
+  const date=fmt.format(new Date());
+  const start=new Date(date+"T00:00:00+05:30"),end=new Date(start.getTime()+86400000);
+  const [x]=await orders.aggregate([
+   {$match:{createdAt:{$gte:start,$lt:end}}},
+   {$facet:{
+    totals:[{$group:{_id:null,sales:{$sum:"$total"},orders:{$sum:1}}}],
+    statuses:[{$group:{_id:"$status",count:{$sum:1}}}],
+    topItems:[{$unwind:"$items"},{$group:{_id:"$items.name",name:{$first:"$items.name"},emoji:{$first:"$items.emoji"},qty:{$sum:"$items.qty"},revenue:{$sum:"$items.subtotal"}}},{$sort:{qty:-1}},{$limit:5}]
+   }}
+  ]).toArray();
+  const byStatus=Object.fromEntries(["placed","preparing","ready","collected"].map(s=>[s,0]));
+  for(const row of x.statuses)byStatus[row._id]=row.count;
+  res.json({date,sales:x.totals[0]?.sales||0,orders:x.totals[0]?.orders||0,byStatus,topItems:x.topItems});
+ });
+ return r;
 };
