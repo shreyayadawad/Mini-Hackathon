@@ -1,9 +1,3 @@
-// ==========================================
-// CAMPUS CANTEEN ORDERS - BACKEND SERVER
-// Person 3: Backend Developer
-// ==========================================
-
-// Import required packages
 const express = require("express");
 const { MongoClient } = require("mongodb");
 const path = require("path");
@@ -11,18 +5,18 @@ const path = require("path");
 // Import API routes
 const menuRoutes = require("./routes/menu");
 const orderRoutes = require("./routes/orders");
+const statsRoutes = require("./routes/stats");
 
 // Create Express application
 const app = express();
 
-// Server configuration
-const PORT = 3000;
+// Configuration
+const PORT = process.env.PORT || 3000;
+const MONGO_URL =
+  process.env.MONGO_URL || "mongodb://127.0.0.1:27017";
+const DB_NAME = process.env.DB_NAME || "campus_canteen";
 
-// MongoDB configuration
-const MONGO_URL = "mongodb://127.0.0.1:27017";
-const DB_NAME = "campus_canteen";
-
-// Middleware to read JSON request bodies
+// Middleware
 app.use(express.json());
 
 // Serve frontend files
@@ -31,7 +25,7 @@ app.use(express.static(path.join(__dirname, "public")));
 // MongoDB client
 const client = new MongoClient(MONGO_URL);
 
-// Start server function
+// Start application
 async function startServer() {
   try {
     // Connect to MongoDB
@@ -46,6 +40,8 @@ async function startServer() {
     const menuCollection = db.collection("menu");
     const ordersCollection = db.collection("orders");
 
+    console.log(`Connected to database: ${DB_NAME}`);
+
     // Health check API
     app.get("/api/health", (req, res) => {
       res.status(200).json({
@@ -55,20 +51,26 @@ async function startServer() {
       });
     });
 
-    // Menu API routes
+    // Menu API
     app.use("/api/menu", menuRoutes(menuCollection));
 
-    // Order API routes
+    // Orders API
     app.use(
       "/api/orders",
       orderRoutes(menuCollection, ordersCollection)
     );
 
-    // Handle unknown API routes
+    // Statistics API
+    app.use(
+      "/api/stats",
+      statsRoutes(ordersCollection)
+    );
+
+    // Handle unknown API endpoints
     app.use("/api", (req, res) => {
       res.status(404).json({
         success: false,
-        message: "API endpoint not found"
+        error: "API endpoint not found"
       });
     });
 
@@ -78,20 +80,34 @@ async function startServer() {
 
       res.status(500).json({
         success: false,
-        message: "Internal server error"
+        error: "Internal server error"
       });
     });
 
-    // Start Express server
+    // Start HTTP server
     app.listen(PORT, () => {
+      console.log("----------------------------------");
+      console.log("Campus Canteen Server Started");
       console.log(`Server running at http://localhost:${PORT}`);
+      console.log("----------------------------------");
+      console.log("Available API endpoints:");
+      console.log("GET    /api/health");
+      console.log("GET    /api/menu");
+      console.log("POST   /api/menu");
+      console.log("PUT    /api/menu/:id");
+      console.log("DELETE /api/menu/:id");
+      console.log("GET    /api/orders");
+      console.log("POST   /api/orders");
+      console.log("PATCH  /api/orders/:id/status");
+      console.log("GET    /api/stats/today");
+      console.log("----------------------------------");
     });
 
   } catch (error) {
-    console.error("Failed to start server:", error.message);
+    console.error("Failed to start server:", error);
     process.exit(1);
   }
 }
 
-// Execute start function
+// Run application
 startServer();

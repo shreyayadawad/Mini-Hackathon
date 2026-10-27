@@ -1,261 +1,119 @@
-const express = require("express");
-const { ObjectId } = require("mongodb");
+// Person 3: Menu CRUD routes mounted under /api/menu.
+const express = require('express');
+const { ObjectId } = require('mongodb');
 
-module.exports = function (menuCollection) {
+function objectIdOrNull(text) {
+  return typeof text === 'string' && /^[a-f\d]{24}$/i.test(text)
+    ? new ObjectId(text)
+    : null;
+}
+
+// Validate and sanitize user input; never pass arbitrary client fields to MongoDB.
+function validateMenu(body, updating = false) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { error: 'Request body must be a JSON object' };
+  }
+
+  const allowed = ['name', 'price', 'category', 'emoji', 'image', 'available'];
+  const keys = Object.keys(body);
+  if (keys.length === 0) return { error: 'Provide menu item fields' };
+  if (keys.some((key) => !allowed.includes(key))) {
+    return { error: 'Request contains unsupported menu fields' };
+  }
+  if (!updating && ['name', 'price', 'category'].some((key) => !(key in body))) {
+    return { error: 'name, price and category are required' };
+  }
+
+  const data = {};
+  for (const field of ['name', 'category']) {
+    if (field in body) {
+      if (typeof body[field] !== 'string' || !body[field].trim()) {
+        return { error: `${field} must be a nonempty string` };
+      }
+      const trimmed = body[field].trim();
+      if (trimmed.length > (field === 'name' ? 80 : 40)) {
+        return { error: `${field} is too long` };
+      }
+      data[field] = trimmed;
+    }
+  }
+  if ('price' in body) {
+    const price = body.price;
+    if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0 || price > 100000 ||
+        Math.abs(price * 100 - Math.round(price * 100)) > 1e-7) {
+      return { error: 'price must be a positive number with at most 2 decimal places' };
+    }
+    data.price = Math.round(price * 100) / 100;
+  }
+  for (const field of ['emoji', 'image']) {
+    if (field in body) {
+      if (typeof body[field] !== 'string' || body[field].length > (field === 'emoji' ? 16 : 500)) {
+        return { error: `${field} must be a short string` };
+      }
+      data[field] = body[field];
+    }
+  }
+  if ('available' in body) {
+    if (typeof body.available !== 'boolean') {
+      return { error: 'available must be true or false' };
+    }
+    data.available = body.available;
+  }
+  if (!updating) {
+    data.emoji = data.emoji ?? '🍽️';
+    data.image = data.image ?? '';
+    data.available = data.available ?? true;
+  }
+  return { data };
+}
+
+module.exports = function makeMenuRouter(menu) {
   const router = express.Router();
 
-  // Convert and validate MongoDB ObjectId
-  function getObjectId(id) {
-    if (!/^[a-fA-F0-9]{24}$/.test(id)) {
-      return null;
-    }
-
-    return new ObjectId(id);
-  }
-
-  // Validate menu item data
-  function validateMenuItem(data, isUpdate = false) {
-    if (!data || typeof data !== "object" || Array.isArray(data)) {
-      return "Request body must be a JSON object";
-    }
-
-    const allowedFields = [
-      "name",
-      "price",
-      "category",
-      "emoji",
-      "image",
-      "available"
-    ];
-
-    const keys = Object.keys(data);
-
-    if (keys.some(key => !allowedFields.includes(key))) {
-      return "Unknown menu field provided";
-    }
-
-    if (isUpdate && keys.length === 0) {
-      return "Provide at least one field to update";
-    }
-
-    if (!isUpdate) {
-      if (!("name" in data) || !("price" in data) ||
-          !("category" in data)) {
-        return "Name, price and category are required";
-      }
-    }
-
-    if ("name" in data &&
-        (typeof data.name !== "string" ||
-         !data.name.trim())) {
-      return "Name must be a non-empty string";
-    }
-
-    if ("category" in data &&
-        (typeof data.category !== "string" ||
-         !data.category.trim())) {
-      return "Category must be a non-empty string";
-    }
-
-    if ("price" in data &&
-        (typeof data.price !== "number" ||
-         !Number.isFinite(data.price) ||
-         data.price <= 0 ||
-         Math.round(data.price * 100) !== data.price * 100)) {
-      return "Price must be positive with at most two decimal places";
-    }
-
-    if ("available" in data &&
-        typeof data.available !== "boolean") {
-      return "Available must be true or false";
-    }
-
-    for (const field of ["emoji", "image"]) {
-      if (field in data && typeof data[field] !== "string") {
-        return `${field} must be a string`;
-      }
-    }
-
-    return null;
-  }
-
-  // =====================================
-  // GET - Retrieve all menu items
-  // =====================================
-
-  router.get("/", async (req, res) => {
-    const items = await menuCollection
-      .find({})
-      .sort({ category: 1, name: 1 })
-      .toArray();
-
-    res.status(200).json(items);
+  // GET /api/menu
+  router.get('/', async (req, res) => {
+    const items = await menu.find({}).sort({ category: 1, name: 1 }).toArray();
+    return res.json(items);
   });
 
-  // =====================================
-  // POST - Add a menu item
-  // =====================================
-
-  router.post("/", async (req, res) => {
-    const error = validateMenuItem(req.body);
-
-    if (error) {
-      return res.status(400).json({
-        success: false,
-        message: error
-      });
-    }
-
-    const name = req.body.name.trim();
-
-    // Check whether an item already exists
-    const existingItem = await menuCollection.findOne({
-      name: {
-        $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
-        $options: "i"
-      }
-    });
-
-    if (existingItem) {
-      return res.status(409).json({
-        success: false,
-        message: "Menu item already exists"
-      });
-    }
+  // POST /api/menu
+  router.post('/', async (req, res) => {
+    const { error, data } = validateMenu(req.body);
+    if (error) return res.status(400).json({ error });
 
     const now = new Date();
-
-    const newItem = {
-      name,
-      price: req.body.price,
-      category: req.body.category.trim(),
-      emoji: req.body.emoji || "",
-      image: req.body.image || "",
-      available: req.body.available ?? true,
-      createdAt: now,
-      updatedAt: now
-    };
-
-    try {
-      const result = await menuCollection.insertOne(newItem);
-
-      return res.status(201).json({
-        ...newItem,
-        _id: result.insertedId
-      });
-    } catch (error) {
-      if (error.code === 11000) {
-        return res.status(409).json({
-          message: "Menu item already exists"
-        });
-      }
-
-      throw error;
-    }
+    const doc = { ...data, createdAt: now, updatedAt: now };
+    const result = await menu.insertOne(doc);
+    return res.status(201).json({ ...doc, _id: result.insertedId });
   });
 
-  // =====================================
-  // PUT - Update a menu item
-  // =====================================
+  // PUT /api/menu/:id  (accepts any nonempty subset of editable fields)
+  router.put('/:id', async (req, res) => {
+    const id = objectIdOrNull(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid menu item ID' });
+    const { error, data } = validateMenu(req.body, true);
+    if (error) return res.status(400).json({ error });
 
-  router.put("/:id", async (req, res) => {
-    const id = getObjectId(req.params.id);
-
-    if (!id) {
-      return res.status(400).json({
-        message: "Invalid menu item ID"
-      });
+    const result = await menu.updateOne(
+      { _id: id },
+      { $set: { ...data, updatedAt: new Date() } }
+    );
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: 'Menu item not found' });
     }
-
-    const error = validateMenuItem(req.body, true);
-
-    if (error) {
-      return res.status(400).json({
-        message: error
-      });
-    }
-
-    const updates = { ...req.body };
-
-    if (updates.name !== undefined) {
-      updates.name = updates.name.trim();
-
-      const duplicate = await menuCollection.findOne({
-        _id: { $ne: id },
-        name: {
-          $regex: `^${updates.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
-          $options: "i"
-        }
-      });
-
-      if (duplicate) {
-        return res.status(409).json({
-          message: "Another menu item has this name"
-        });
-      }
-    }
-
-    if (updates.category !== undefined) {
-      updates.category = updates.category.trim();
-    }
-
-    updates.updatedAt = new Date();
-
-    try {
-      const result = await menuCollection.updateOne(
-        { _id: id },
-        { $set: updates }
-      );
-
-      if (result.matchedCount === 0) {
-        return res.status(404).json({
-          message: "Menu item not found"
-        });
-      }
-
-      const updatedItem = await menuCollection.findOne({
-        _id: id
-      });
-
-      return res.status(200).json(updatedItem);
-    } catch (error) {
-      if (error.code === 11000) {
-        return res.status(409).json({
-          message: "Menu item already exists"
-        });
-      }
-
-      throw error;
-    }
+    return res.json(await menu.findOne({ _id: id }));
   });
 
-  // =====================================
-  // DELETE - Remove a menu item
-  // =====================================
+  // DELETE /api/menu/:id
+  router.delete('/:id', async (req, res) => {
+    const id = objectIdOrNull(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid menu item ID' });
 
-  router.delete("/:id", async (req, res) => {
-    const id = getObjectId(req.params.id);
-
-    if (!id) {
-      return res.status(400).json({
-        message: "Invalid menu item ID"
-      });
-    }
-
-    const result = await menuCollection.deleteOne({
-      _id: id
-    });
-
+    const result = await menu.deleteOne({ _id: id });
     if (result.deletedCount === 0) {
-      return res.status(404).json({
-        message: "Menu item not found"
-      });
+      return res.status(404).json({ error: 'Menu item not found' });
     }
-
-    return res.status(200).json({
-      success: true,
-      message: "Menu item deleted successfully"
-    });
+    return res.json({ message: 'Menu item deleted' });
   });
 
   return router;
