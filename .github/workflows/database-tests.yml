@@ -8,7 +8,7 @@ on:
 
 jobs:
   test-database:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       mongo:
         image: mongo:8.0
