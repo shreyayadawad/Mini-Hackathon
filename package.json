@@ -1,0 +1,22 @@
+{
+  "name": "campus-canteen-orders",
+  "version": "1.0.0",
+  "description": "Campus Canteen Orders - Node.js, Express and MongoDB backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "canteen",
+    "express",
+    "mongodb",
+    "rest-api"
+  ],
+  "author": "Campus Canteen Team",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.1.0",
+    "mongodb": "^6.20.0"
+  }
+}
