@@ -1,291 +1,236 @@
-const $ = (s) => document.querySelector(s);
+// Campus Canteen frontend integration for public/index.html
+const $ = (selector, root = document) => root.querySelector(selector);
 const FLOW = ["placed", "preparing", "ready", "collected"];
-const META = {
-  placed: { emoji: "🧾", label: "Placed" },
-  preparing: { emoji: "👨‍🍳", label: "Preparing" },
-  ready: { emoji: "🔔", label: "Ready" },
-  collected: { emoji: "✅", label: "Collected" },
-};
-const CATEGORIES = ["Meals", "Snacks", "Drinks", "Desserts"];
-const CAT_EMOJI = { All: "🍽️", Meals: "🍛", Snacks: "🍟", Drinks: "🥤", Desserts: "🍨" };
+const LABEL = { placed: "Preparing", preparing: "Ready", ready: "Collected" };
+let menu = [], cart = new Map(), activeCategory = "all", editingId = null;
 
-let menu = [];
-let cart = new Map(); // menuId -> qty
-let activeCat = "All";
-let editingId = null;
-let currentTab = "order";
-let timer = null;
-
-// ---------- helpers ----------
-// tiny DOM builder: h("div", {class:"x", onclick: fn}, child1, child2)
-function h(tag, props = {}, ...kids) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(props)) {
-    if (k === "class") el.className = v;
-    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
-    else if (v !== false && v != null) el.setAttribute(k, v);
-  }
-  kids.flat().forEach((c) => {
-    if (c == null || c === false) return;
-    el.append(c.nodeType ? c : document.createTextNode(c));
-  });
-  return el;
-}
-const rs = (n) => "₹" + Number(n).toFixed(2).replace(/\.00$/, "");
-const timeOf = (d) => new Date(d).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-
+const money = value => "₹" + Number(value || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
+const text = (selector, value) => { const node = $(selector); if (node) node.textContent = value; };
+const clone = id => $(id).content.firstElementChild.cloneNode(true);
 async function api(url, options = {}) {
-  const res = await fetch(url, { headers: { "Content-Type": "application/json" }, ...options });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Something went wrong");
+  const response = await fetch(url, { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || data.message || "Request failed (" + response.status + ")");
   return data;
 }
-function toast(text, type = "") {
-  const t = h("div", { class: "toast " + type }, text);
-  $("#toasts").appendChild(t);
-  setTimeout(() => t.remove(), 3500);
+function toast(message) {
+  const container = $("#toasts");
+  const element = document.createElement("div");
+  element.className = "toast";
+  element.textContent = message;
+  container.append(element);
+  setTimeout(() => element.remove(), 4000);
 }
-function say(el, text, ok) { el.textContent = text; el.className = "msg " + (ok ? "success" : "error"); }
+function showError(error) { console.error(error); toast(error.message || String(error)); }
+function itemById(id) { return menu.find(item => item._id === id); }
+function total() { return [...cart].reduce((sum, [id, qty]) => sum + (itemById(id)?.price || 0) * qty, 0); }
+function openCart() { $("#cart").classList.add("is-open", "open"); $("#cart-backdrop").hidden = false; }
+function closeCart() { $("#cart").classList.remove("is-open", "open"); $("#cart-backdrop").hidden = true; }
 
-// ---------- tabs ----------
-document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.tab)));
-
-function switchTab(name) {
-  currentTab = name;
-  document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
-  ["order", "board", "manage", "sales"].forEach((v) => $("#view-" + v).classList.toggle("hidden", v !== name));
-  clearInterval(timer);
-  if (name === "board") { loadBoard(); timer = setInterval(loadBoard, 10000); }  // refresh every 10 seconds
-  if (name === "sales") loadSales();
-  if (name === "order" || name === "manage") loadMenu();
-}
-
-// ---------- MENU / ORDER VIEW ----------
 async function loadMenu() {
-  menu = await api("/api/menu");
-  // drop cart lines whose item was deleted or became unavailable
-  for (const id of [...cart.keys()]) {
-    const m = menu.find((x) => x._id === id);
-    if (!m || !m.available) cart.delete(id);
+  try {
+    menu = await api("/api/menu");
+    if (!Array.isArray(menu)) throw new Error("Menu response must be an array");
+    for (const id of cart.keys()) if (!itemById(id)?.available) cart.delete(id);
+    renderFilters(); renderMenu(); renderCart(); renderManage();
+  } catch (error) { text("#menu-grid", "Unable to load menu: " + error.message); showError(error); }
+}
+function renderFilters() {
+  const box = $("#category-filters");
+  box.replaceChildren();
+  const categories = ["all", ...new Set(menu.map(item => item.category))];
+  for (const category of categories) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chip" + (activeCategory === category ? " is-active active" : "");
+    button.textContent = category === "all" ? "All" : category;
+    button.dataset.category = category;
+    button.addEventListener("click", () => { activeCategory = category; renderFilters(); renderMenu(); });
+    box.append(button);
   }
-  renderChips(); renderMenu(); renderCart(); renderManage();
 }
-
-function renderChips() {
-  const box = $("#chips");
-  box.innerHTML = "";
-  ["All", ...CATEGORIES].forEach((c) =>
-    box.appendChild(h("button", { class: "chip" + (c === activeCat ? " active" : ""), onclick: () => { activeCat = c; renderChips(); renderMenu(); } },
-      `${CAT_EMOJI[c]} ${c}`))
-  );
-}
-
-function media(m) {
-  const box = h("div", { class: "media cat-" + m.category }, h("span", { class: "big" }, m.emoji));
-  if (m.image) {
-    const img = h("img", { src: m.image, alt: m.name, loading: "lazy" });
-    img.addEventListener("error", () => img.remove()); // broken link -> emoji stays
-    box.appendChild(img);
-  }
-  if (!m.available) box.appendChild(h("span", { class: "badge" }, "Sold out"));
-  return box;
-}
-
-function renderMenu() {
-  const q = $("#search").value.trim().toLowerCase();
-  const list = menu.filter((m) => (activeCat === "All" || m.category === activeCat) && m.name.toLowerCase().includes(q));
-  const grid = $("#menuGrid");
-  grid.innerHTML = "";
-  if (!list.length) grid.appendChild(h("div", { class: "empty" }, h("span", { class: "e" }, "🥲"), "No dishes found"));
-  list.forEach((m) => {
-    const qty = cart.get(m._id) || 0;
-    const action = !m.available ? h("small", {}, "Unavailable")
-      : qty === 0 ? h("button", { class: "btn add", onclick: () => changeQty(m._id, 1) }, "Add +")
-      : h("div", { class: "stepper" },
-          h("button", { onclick: () => changeQty(m._id, -1) }, "−"), h("span", {}, qty),
-          h("button", { onclick: () => changeQty(m._id, 1) }, "+"));
-    grid.appendChild(h("div", { class: "dish" + (m.available ? "" : " off") },
-      media(m),
-      h("div", { class: "dish-body" },
-        h("h3", {}, m.name), h("span", { class: "dish-cat" }, m.category),
-        h("div", { class: "dish-foot" }, h("span", { class: "price" }, rs(m.price)), action))));
-  });
-}
-$("#search").addEventListener("input", renderMenu);
-
-function changeQty(id, d) {
-  const n = Math.min(20, (cart.get(id) || 0) + d);
-  if (n <= 0) cart.delete(id); else cart.set(id, n);
+function changeQty(id, delta) {
+  const next = Math.min(20, (cart.get(id) || 0) + delta);
+  if (next <= 0) cart.delete(id); else cart.set(id, next);
   renderMenu(); renderCart();
 }
-
+function renderMenu() {
+  const grid = $("#menu-grid"); grid.replaceChildren();
+  const shown = menu.filter(item => activeCategory === "all" || item.category === activeCategory);
+  if (!shown.length) { grid.textContent = "No dishes in this category."; return; }
+  for (const item of shown) {
+    const card = clone("#tpl-menu-card");
+    $(".menu-card__name", card).textContent = item.name;
+    $(".menu-card__cat", card).textContent = item.category;
+    $(".price", card).textContent = money(item.price);
+    $(".menu-card__emoji", card).textContent = item.emoji || "🍽️";
+    const img = $(".menu-card__img", card);
+    if (item.image) { img.src = item.image; img.alt = item.name; img.onerror = () => img.remove(); }
+    else img.remove();
+    if (item.available) $(".menu-card__badge", card).remove();
+    else card.classList.add("is-sold-out");
+    const button = $(".btn--add", card);
+    button.disabled = !item.available;
+    button.textContent = !item.available ? "Sold out" : cart.has(item._id) ? "Add more +" : "Add +";
+    button.addEventListener("click", () => changeQty(item._id, 1));
+    grid.append(card);
+  }
+}
 function renderCart() {
-  const box = $("#cartItems");
-  box.innerHTML = "";
-  let total = 0;
-  if (cart.size === 0) box.appendChild(h("div", { class: "empty" }, h("span", { class: "e" }, "🍽️"), "Your tray is empty"));
-  cart.forEach((qty, id) => {
-    const m = menu.find((x) => x._id === id);
-    if (!m) return;
-    total += m.price * qty;
-    box.appendChild(h("div", { class: "cart-line" },
-      h("span", { class: "em" }, m.emoji),
-      h("div", { class: "nm" }, m.name, h("small", {}, `${rs(m.price)} × ${qty}`)),
-      h("div", { class: "stepper" },
-        h("button", { onclick: () => changeQty(id, -1) }, "−"), h("span", {}, qty),
-        h("button", { onclick: () => changeQty(id, 1) }, "+"))));
-  });
-  $("#cartTotal").textContent = rs(total);
+  const list = $("#cart-items"); list.replaceChildren();
+  let count = 0;
+  for (const [id, qty] of cart) {
+    const item = itemById(id); if (!item) continue;
+    count += qty;
+    const row = clone("#tpl-cart-row");
+    $(".cart-row__emoji", row).textContent = item.emoji || "🍽️";
+    $(".cart-row__name", row).textContent = item.name;
+    $(".cart-row__sub", row).textContent = money(item.price) + " × " + qty;
+    $(".stepper__qty", row).textContent = qty;
+    $('[data-act="dec"]', row).addEventListener("click", () => changeQty(id, -1));
+    $('[data-act="inc"]', row).addEventListener("click", () => changeQty(id, 1));
+    list.append(row);
+  }
+  $("#cart-empty").hidden = count > 0;
+  text("#cart-total", money(total()));
+  text("#cart-bar-total", money(total()));
+  text("#cart-count", count);
+  $("#place-order").disabled = count === 0;
 }
-
-$("#placeBtn").addEventListener("click", async () => {
-  const msg = $("#cartMsg");
-  const btn = $("#placeBtn");
-  btn.disabled = true;
+$("#cart-toggle").addEventListener("click", openCart);
+$("#cart-close").addEventListener("click", closeCart);
+$("#cart-backdrop").addEventListener("click", closeCart);
+$("#place-order").addEventListener("click", async () => {
+  const button = $("#place-order"), customer = $("#customer").value.trim();
+  if (!customer) { text("#order-msg", "Enter your name first."); return; }
+  if (!cart.size) return;
+  button.disabled = true;
   try {
-    const body = {
-      customer: $("#customer").value,
-      items: [...cart].map(([menuId, qty]) => ({ menuId, qty })), // note: no prices sent!
-    };
-    const order = await api("/api/orders", { method: "POST", body: JSON.stringify(body) });
-    cart.clear();
-    renderMenu(); renderCart();
-    say(msg, `Order #${order._id.slice(-4).toUpperCase()} placed! Total ${rs(order.total)} 🎉`, true);
-    toast(`🎉 Order placed! Server total: ${rs(order.total)}`, "success");
-  } catch (e) {
-    say(msg, e.message, false);
-    loadMenu(); // menu may have changed (e.g. item sold out)
-  } finally { btn.disabled = false; }
+    const order = await api("/api/orders", { method: "POST", body: JSON.stringify({
+      customer, items: [...cart].map(([menuId, qty]) => ({ menuId, qty }))
+    }) });
+    cart.clear(); renderCart(); renderMenu(); closeCart();
+    text("#order-msg", "Order #" + order._id.slice(-6).toUpperCase() + " placed! Total " + money(order.total));
+    toast("Order placed successfully!");
+    await Promise.all([loadOrders(), loadStats()]);
+    location.hash = "#orders";
+  } catch (error) { text("#order-msg", error.message); showError(error); }
+  finally { button.disabled = cart.size === 0; }
 });
 
-// ---------- ORDERS BOARD ----------
-async function loadBoard() {
+async function loadOrders() {
   try {
-    const list = await api("/api/orders");
-    renderBoard(list);
-    $("#lastUpdate").textContent = "updated " + new Date().toLocaleTimeString();
-  } catch (e) { toast(e.message, "error"); }
+    const orders = await api("/api/orders");
+    for (const status of FLOW) {
+      const list = $("#col-" + status); list.replaceChildren();
+      const selected = orders.filter(order => order.status === status);
+      text("#count-" + status, selected.length);
+      for (const order of selected) {
+        const card = clone("#tpl-order-card");
+        $(".order-card__who", card).textContent = order.customer + " · #" + order._id.slice(-6).toUpperCase();
+        $(".order-card__time", card).textContent = new Date(order.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+        const items = $(".order-card__items", card);
+        for (const line of order.items || []) {
+          const li = document.createElement("li");
+          li.textContent = (line.emoji || "🍽️") + " " + line.qty + " × " + line.name;
+          items.append(li);
+        }
+        $(".order-card__total", card).textContent = money(order.total);
+        const button = $(".btn--advance", card);
+        const next = FLOW[FLOW.indexOf(status) + 1];
+        if (next) {
+          button.textContent = "Mark " + LABEL[status] + " →";
+          button.addEventListener("click", async () => {
+            button.disabled = true;
+            try {
+              await api("/api/orders/" + order._id + "/status", { method: "PATCH", body: JSON.stringify({ status: next }) });
+              await Promise.all([loadOrders(), loadStats()]);
+            } catch (error) { showError(error); button.disabled = false; }
+          });
+        } else { button.textContent = "Collected ✓"; button.disabled = true; }
+        list.append(card);
+      }
+    }
+  } catch (error) { showError(error); }
 }
-
-function renderBoard(list) {
-  const board = $("#board");
-  board.innerHTML = "";
-  FLOW.forEach((st, i) => {
-    const mine = list.filter((o) => o.status === st);
-    const col = h("div", { class: "col " + st }, h("h3", {}, `${META[st].emoji} ${META[st].label}`, h("span", {}, mine.length)));
-    if (!mine.length) col.appendChild(h("div", { class: "empty" }, "Nothing here"));
-    mine.forEach((o) => {
-      const next = FLOW[i + 1];
-      col.appendChild(h("div", { class: "order" },
-        h("div", { class: "order-top" }, `#${o._id.slice(-4).toUpperCase()}`, h("small", {}, `${o.customer} · ${timeOf(o.createdAt)}`)),
-        h("ul", {}, o.items.map((it) => h("li", {}, `${it.emoji} ${it.qty} × ${it.name}`))),
-        h("div", { class: "order-foot" }, rs(o.total),
-          next ? h("button", { class: "btn", onclick: () => advance(o._id, next) }, `${META[next].emoji} ${META[next].label} →`)
-               : h("span", { class: "done-tag" }, "Done ✔"))));
-    });
-    board.appendChild(col);
-  });
-}
-
-async function advance(id, status) {
+async function loadStats() {
   try {
-    await api(`/api/orders/${id}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
-    toast(`Order moved to "${status}"`, "success");
-  } catch (e) { toast(e.message, "error"); }
-  loadBoard();
+    const stats = await api("/api/stats/today");
+    text("#stat-sales", money(stats.sales));
+    text("#stat-orders", stats.orders);
+    text("#hero-preparing", stats.byStatus?.preparing || 0);
+    text("#hero-ready", stats.byStatus?.ready || 0);
+    const top = $("#top-items"); top.replaceChildren();
+    if (!stats.topItems?.length) {
+      const li = document.createElement("li"); li.textContent = "No sales yet."; top.append(li);
+    } else for (const item of stats.topItems) {
+      const li = document.createElement("li"), label = document.createElement("span"), qty = document.createElement("b");
+      label.textContent = (item.emoji || "🍽️") + " " + item.name; qty.textContent = item.qty;
+      li.append(label, qty); top.append(li);
+    }
+  } catch (error) { showError(error); }
 }
-$("#refreshBtn").addEventListener("click", loadBoard);
-
-// ---------- MANAGE MENU ----------
-$("#mCategory").innerHTML = CATEGORIES.map((c) => `<option>${c}</option>`).join("");
-
 function renderManage() {
-  const box = $("#manageList");
-  box.innerHTML = "";
-  menu.forEach((m) =>
-    box.appendChild(h("div", { class: "mrow" },
-      h("span", { class: "em" }, m.emoji),
-      h("div", { class: "info" }, h("b", {}, m.name), h("small", {}, `${m.category} · ${rs(m.price)}`)),
-      h("span", { class: "pill " + (m.available ? "on" : "off") }, m.available ? "Available" : "Sold out"),
-      h("div", { class: "actions" },
-        h("button", { class: "btn small ghost", onclick: () => toggleAvail(m) }, m.available ? "Mark sold out" : "Mark available"),
-        h("button", { class: "btn small", onclick: () => startEdit(m) }, "Edit"),
-        h("button", { class: "btn small danger", onclick: () => removeItem(m) }, "Delete"))))
-  );
+  const list = $("#manage-list"); list.replaceChildren();
+  for (const item of menu) {
+    const row = clone("#tpl-manage-row");
+    $(".manage-row__emoji", row).textContent = item.emoji || "🍽️";
+    $(".manage-row__name", row).textContent = item.name;
+    $(".manage-row__meta", row).textContent = item.category + " · " + money(item.price);
+    const toggle = $('[data-act="toggle"]', row);
+    toggle.textContent = item.available ? "Mark sold out" : "Mark available";
+    toggle.addEventListener("click", () => saveMenuItem(item._id, { available: !item.available }));
+    $('[data-act="edit"]', row).addEventListener("click", () => openEditor(item));
+    $('[data-act="delete"]', row).addEventListener("click", async () => {
+      if (!confirm("Delete " + item.name + "?")) return;
+      try { await api("/api/menu/" + item._id, { method: "DELETE" }); await loadMenu(); toast("Item deleted"); }
+      catch (error) { showError(error); }
+    });
+    list.append(row);
+  }
 }
-
-function resetForm() {
-  editingId = null;
-  $("#menuForm").reset();
-  $("#mAvail").checked = true;
-  $("#formTitle").textContent = "➕ Add menu item";
-  $("#saveBtn").textContent = "Save item";
+function openEditor(item = null) {
+  editingId = item?._id || null;
+  $("#item-form").reset();
+  text("#dialog-title", item ? "Edit item" : "Add item");
+  text("#item-msg", "");
+  $("#item-id").value = editingId || "";
+  $("#item-name").value = item?.name || "";
+  $("#item-price").value = item?.price ?? "";
+  $("#item-category").value = item?.category || "";
+  $("#item-emoji").value = item?.emoji || "";
+  $("#item-image").value = item?.image || "";
+  $("#item-available").checked = item?.available ?? true;
+  const datalist = $("#category-list"); datalist.replaceChildren();
+  for (const category of new Set(menu.map(i => i.category))) {
+    const option = document.createElement("option"); option.value = category; datalist.append(option);
+  }
+  $("#item-dialog").showModal();
 }
-function startEdit(m) {
-  editingId = m._id;
-  $("#mName").value = m.name; $("#mPrice").value = m.price; $("#mCategory").value = m.category;
-  $("#mEmoji").value = m.emoji; $("#mImage").value = m.image || ""; $("#mAvail").checked = m.available;
-  $("#formTitle").textContent = "✏️ Edit " + m.name;
-  $("#saveBtn").textContent = "Update item";
-  window.scrollTo({ top: 0, behavior: "smooth" });
+async function saveMenuItem(id, body) {
+  try {
+    await api(id ? "/api/menu/" + id : "/api/menu", {
+      method: id ? "PUT" : "POST", body: JSON.stringify(body)
+    });
+    await loadMenu(); toast("Menu saved");
+  } catch (error) { showError(error); throw error; }
 }
-const formBody = (extra = {}) => ({
-  name: $("#mName").value, price: $("#mPrice").value, category: $("#mCategory").value,
-  emoji: $("#mEmoji").value, image: $("#mImage").value, available: $("#mAvail").checked, ...extra,
+$("#add-item").addEventListener("click", () => openEditor());
+$("#item-cancel").addEventListener("click", () => $("#item-dialog").close());
+$("#item-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const body = {
+    name: $("#item-name").value.trim(),
+    price: Number($("#item-price").value),
+    category: $("#item-category").value.trim(),
+    emoji: $("#item-emoji").value.trim(),
+    image: $("#item-image").value.trim(),
+    available: $("#item-available").checked
+  };
+  try { await saveMenuItem(editingId, body); $("#item-dialog").close(); }
+  catch (error) { text("#item-msg", error.message); }
 });
-
-$("#menuForm").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  try {
-    const url = editingId ? `/api/menu/${editingId}` : "/api/menu";
-    await api(url, { method: editingId ? "PUT" : "POST", body: JSON.stringify(formBody()) });
-    say($("#menuMsg"), editingId ? "Item updated ✔" : "Item added ✔", true);
-    resetForm();
-    loadMenu();
-  } catch (err) { say($("#menuMsg"), err.message, false); }
-});
-$("#cancelEdit").addEventListener("click", () => { resetForm(); $("#menuMsg").textContent = ""; });
-
-async function toggleAvail(m) {
-  try {
-    await api(`/api/menu/${m._id}`, { method: "PUT", body: JSON.stringify({ ...m, available: !m.available }) });
-    loadMenu();
-  } catch (e) { toast(e.message, "error"); }
-}
-async function removeItem(m) {
-  if (!confirm(`Delete "${m.name}" from the menu?`)) return;
-  try { await api(`/api/menu/${m._id}`, { method: "DELETE" }); toast("Item deleted"); loadMenu(); }
-  catch (e) { toast(e.message, "error"); }
-}
-
-// ---------- SALES ----------
-async function loadSales() {
-  try {
-    const s = await api("/api/stats/today");
-    $("#salesDate").textContent = s.date;
-    const avg = s.orders ? s.sales / s.orders : 0;
-    const cards = $("#salesCards");
-    cards.innerHTML = "";
-    [["a", "💰", rs(s.sales), "Total sales today"], ["b", "🧾", s.orders, "Orders today"], ["c", "📈", rs(avg), "Average order value"]]
-      .forEach(([c, e, v, l]) => cards.appendChild(h("div", { class: "stat " + c }, h("span", { class: "e" }, e), h("b", {}, v), h("span", {}, l))));
-
-    const top = $("#topItems");
-    top.innerHTML = "";
-    const max = Math.max(1, ...s.topItems.map((i) => i.qty));
-    if (!s.topItems.length) top.appendChild(h("div", { class: "empty" }, "No orders yet today"));
-    s.topItems.forEach((i) => top.appendChild(h("div", { class: "bar-row" },
-      h("span", { class: "lbl" }, `${i.emoji} ${i.name}`),
-      h("div", { class: "bar" }, h("i", { style: `width:${(i.qty / max) * 100}%` })), h("span", { class: "n" }, i.qty))));
-
-    const sb = $("#statusBars");
-    sb.innerHTML = "";
-    const maxS = Math.max(1, ...FLOW.map((f) => s.byStatus[f] || 0));
-    FLOW.forEach((f) => sb.appendChild(h("div", { class: "bar-row" },
-      h("span", { class: "lbl" }, `${META[f].emoji} ${META[f].label}`),
-      h("div", { class: "bar" }, h("i", { style: `width:${((s.byStatus[f] || 0) / maxS) * 100}%` })),
-      h("span", { class: "n" }, s.byStatus[f] || 0))));
-  } catch (e) { toast(e.message, "error"); }
-}
-
-// ---------- start ----------
-loadMenu().catch((e) => toast(e.message, "error"));
+loadMenu();
+loadOrders();
+loadStats();
+setInterval(() => { loadOrders(); loadStats(); }, 15000);
