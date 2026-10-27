@@ -12,7 +12,6 @@ const CAT_EMOJI = { All: "🍽️", Meals: "🍛", Snacks: "🍟", Drinks: "🥤
 let menu = [];
 let cart = new Map(); // menuId -> qty
 let activeCat = "All";
-let editingId = null;
 let timer = null;
 
 // ---------- helpers ----------
@@ -52,11 +51,11 @@ document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () 
 
 function switchTab(name) {
   document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
-  ["order", "board", "manage", "sales"].forEach((v) => $("#view-" + v).classList.toggle("hidden", v !== name));
+  ["order", "board", "sales"].forEach((v) => $("#view-" + v).classList.toggle("hidden", v !== name));
   clearInterval(timer);
   if (name === "board") { loadBoard(); timer = setInterval(loadBoard, 10000); } // refresh every 10 seconds
   if (name === "sales") loadSales();
-  if (name === "order" || name === "manage") loadMenu();
+  if (name === "order") loadMenu();
 }
 
 // ---------- MENU / ORDER VIEW ----------
@@ -67,7 +66,7 @@ async function loadMenu() {
     const m = menu.find((x) => x._id === id);
     if (!m || !m.available) cart.delete(id);
   }
-  renderChips(); renderMenu(); renderCart(); renderManage();
+    renderChips(); renderMenu(); renderCart();
 }
 
 function renderChips() {
