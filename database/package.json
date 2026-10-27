@@ -4,7 +4,8 @@
   "description": "",
   "main": "db.js",
   "scripts": {
-    "test": "node test-db.js"
+    "test": "node --test verify-stats.test.js",
+    "smoke": "node test-db.js"
   },
   "keywords": [],
   "author": "",
